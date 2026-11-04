@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "CF Group Contest Tracker",
+  "version": "1.0",
+  "description": "Track student progress across multiple Codeforces group contests with cumulative filtering.",
+  "permissions": [
+    "storage",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "*://codeforces.com/api/*"
+  ],
+  "action": {
+    "default_title": "Open CF Tracker Dashboard"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
