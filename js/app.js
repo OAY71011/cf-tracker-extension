@@ -91,7 +91,7 @@ async function addContest() {
 		await saveState();
 
 		input.value = '';
-		updateVariableReference(); // Update advanced variables list
+		updateVariableReference();
 		renderContestsView();
 		renderDashboard();
 	} catch (err) {
@@ -116,7 +116,7 @@ function renderContestsView() {
           <select class="contest-req-select" data-idx="${index}">
             <option value="registered" ${contest.reqType === 'registered' ? 'selected' : ''}>Must Register</option>
             <option value="participated" ${contest.reqType === 'participated' ? 'selected' : ''}>Must Participate (>=1 attempt)</option>
-            <option value="solved" ${contest.reqType === 'solved' ? 'selected' : ''}>Must Solve >= N</option>
+            <option value="solved" ${contest.reqType === 'solved' ? 'selected' : ''}>Must Solve >= N (In-Contest Only)</option>
           </select>
           <input type="number" class="contest-min-input" data-idx="${index}" value="${contest.minSolved}" min="1" 
                  style="width: 60px; ${contest.reqType !== 'solved' ? 'display:none;' : ''}">
@@ -164,7 +164,7 @@ function renderContestsView() {
 	});
 }
 
-// --- Data Fetching & Sync ---
+// --- Data Fetching & Sync (UPDATED FOR UPSOLVING) ---
 async function syncData() {
 	const btn = document.getElementById('btn-refresh');
 	btn.textContent = 'Syncing...';
@@ -187,13 +187,31 @@ async function syncData() {
 }
 
 async function processStandingsData(contestId, rows) {
+	// Group rows by student handle to capture both CONTESTANT and PRACTICE modes
+	const userRows = {};
 	rows.forEach(row => {
 		const handle = row.party.members[0].handle;
-		let solvedCount = 0;
+		if (!userRows[handle]) userRows[handle] = [];
+		userRows[handle].push(row);
+	});
+
+	Object.keys(userRows).forEach(handle => {
 		let attemptsCount = 0;
-		row.problemResults.forEach(pr => {
-			if (pr.points > 0) solvedCount++;
-			if (pr.rejectedAttemptCount > 0 || pr.points > 0) attemptsCount++;
+		const inContestSolved = new Set();
+		const totalSolved = new Set();
+
+		userRows[handle].forEach(row => {
+			const pType = row.party.participantType;
+			// PRACTICE is out-of-contest (upsolving). Everything else is in-contest/official
+			const isInContest = pType !== 'PRACTICE';
+
+			row.problemResults.forEach((pr, idx) => {
+				if (pr.rejectedAttemptCount > 0 || pr.points > 0) attemptsCount++;
+				if (pr.points > 0) {
+					totalSolved.add(idx);
+					if (isInContest) inContestSolved.add(idx);
+				}
+			});
 		});
 
 		if (!state.students[handle]) state.students[handle] = {};
@@ -201,17 +219,21 @@ async function processStandingsData(contestId, rows) {
 		state.students[handle][contestId] = {
 			registered: true,
 			participated: attemptsCount > 0,
-			solvedCount: solvedCount
+			solvedCount: inContestSolved.size,
+			upsolveCount: totalSolved.size - inContestSolved.size,
+			totalSolvedCount: totalSolved.size
 		};
 	});
 }
 
-// --- Advanced Conditions ---
+// --- Advanced Conditions (UPDATED FOR UPSOLVING) ---
 function buildEnvironment(studentData) {
 	const env = {};
 	state.contests.forEach(c => {
-		const sd = studentData[c.id] || { registered: false, participated: false, solvedCount: 0 };
-		env[`solved_${c.id}`] = sd.solvedCount;
+		const sd = studentData[c.id] || { registered: false, participated: false, solvedCount: 0, upsolveCount: 0, totalSolvedCount: 0 };
+		env[`solved_${c.id}`] = sd.solvedCount || 0;
+		env[`upsolve_${c.id}`] = sd.upsolveCount || 0;
+		env[`total_solved_${c.id}`] = sd.totalSolvedCount || 0;
 		env[`attempted_${c.id}`] = sd.participated;
 		env[`registered_${c.id}`] = sd.registered;
 	});
@@ -222,7 +244,7 @@ function updateVariableReference() {
 	const list = document.getElementById('var-ref-list');
 	list.innerHTML = '';
 	state.contests.forEach(c => {
-		[`solved_${c.id}`, `attempted_${c.id}`, `registered_${c.id}`].forEach(varName => {
+		[`solved_${c.id}`, `upsolve_${c.id}`, `total_solved_${c.id}`, `attempted_${c.id}`, `registered_${c.id}`].forEach(varName => {
 			const badge = document.createElement('div');
 			badge.className = 'var-badge';
 			badge.textContent = varName;
@@ -304,7 +326,7 @@ function renderAdvancedRulesView() {
 	});
 }
 
-// --- Dashboard & Filtering Evaluation ---
+// --- Dashboard & Filtering Evaluation (UPDATED UI FOR UPSOLVES) ---
 function evaluateStudent(studentData) {
 	const activeContests = state.contests.filter(c => c.active);
 	const activeRules = state.advancedRules.filter(r => r.active);
@@ -315,17 +337,28 @@ function evaluateStudent(studentData) {
 	const ruleResults = {};
 
 	activeContests.forEach(c => {
-		const sd = studentData[c.id] || { registered: false, participated: false, solvedCount: 0 };
+		const sd = studentData[c.id] || { registered: false, participated: false, solvedCount: 0, upsolveCount: 0 };
 		let passed = false;
+
+		// Basic rules ONLY evaluate in-contest solves, advanced rules can use upsolves
 		if (c.reqType === 'registered' && sd.registered) passed = true;
 		else if (c.reqType === 'participated' && sd.participated) passed = true;
 		else if (c.reqType === 'solved' && sd.solvedCount >= c.minSolved) passed = true;
+
 		if (!passed) passedBasic = false;
 
-		results[c.id] = {
-			passed,
-			text: c.reqType === 'solved' ? `Solved: ${sd.solvedCount}/${c.minSolved}` : (c.reqType === 'participated' ? (sd.participated ? 'Attempted' : 'No Sub') : (sd.registered ? 'Reg' : 'Not Reg'))
-		};
+		// Format the text output to show upsolves nicely
+		let textOut = '';
+		if (c.reqType === 'solved') {
+			const upTxt = sd.upsolveCount > 0 ? ` (+${sd.upsolveCount} up)` : '';
+			textOut = `Solved: ${sd.solvedCount}${upTxt}/${c.minSolved}`;
+		} else if (c.reqType === 'participated') {
+			textOut = sd.participated ? 'Attempted' : 'No Sub';
+		} else {
+			textOut = sd.registered ? 'Reg' : 'Not Reg';
+		}
+
+		results[c.id] = { passed, text: textOut };
 	});
 
 	if (activeRules.length > 0) {
@@ -353,7 +386,6 @@ function renderDashboard() {
 	const activeContests = state.contests.filter(c => c.active);
 	const activeRules = state.advancedRules.filter(r => r.active);
 
-	// Headers (Added # column)
 	headRow.innerHTML = '<th>#</th><th>Student Handle</th>';
 	activeContests.forEach(c => {
 		const th = document.createElement('th');
@@ -370,16 +402,14 @@ function renderDashboard() {
 	tbody.innerHTML = '';
 	const handles = Object.keys(state.students).sort((a, b) => a.localeCompare(b.toLowerCase()));
 
-	let rowIndex = 1; // Initialize row counter
+	let rowIndex = 1;
 
 	handles.forEach(handle => {
 		const evalResult = evaluateStudent(state.students[handle]);
 
-		// Skip row entirely if filtering for passed students and they failed ANY active requirement
 		if (showPassedOnly && !evalResult.passedAll) return;
 
 		const tr = document.createElement('tr');
-		// Added rowIndex to the HTML
 		let html = `<td>${rowIndex++}</td><td><strong>${handle}</strong></td>`;
 
 		activeContests.forEach(c => {
@@ -403,7 +433,6 @@ function exportCSV() {
 	const activeRules = state.advancedRules.filter(r => r.active);
 	const showPassedOnly = document.getElementById('filter-passed-only').checked;
 
-	// Added # column to export
 	let csvContent = "#,Student Handle,";
 	activeContests.forEach(c => csvContent += `"${c.name} (Basic)",`);
 	activeRules.forEach(r => csvContent += `"Rule: ${r.name}",`);
@@ -411,13 +440,12 @@ function exportCSV() {
 
 	const handles = Object.keys(state.students).sort((a, b) => a.localeCompare(b.toLowerCase()));
 
-	let rowIndex = 1; // Initialize row counter for export
+	let rowIndex = 1;
 
 	handles.forEach(handle => {
 		const evalResult = evaluateStudent(state.students[handle]);
 		if (showPassedOnly && !evalResult.passedAll) return;
 
-		// Added rowIndex to the CSV row
 		let row = `"${rowIndex++}","${handle}",`;
 		activeContests.forEach(c => {
 			const res = evalResult.results[c.id];
