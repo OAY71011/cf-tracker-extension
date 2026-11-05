@@ -12,7 +12,7 @@ A production-ready Google Chrome extension designed for competitive programming 
 * **1-Click Export:** Export filtered or complete datasets to an Excel-compatible `.csv` file.
 * **Secure API Integration:** Fully localized API credential management using the Web Crypto API for SHA-512 signed requests. Keys never leave your browser.
 
-## 🛠️ Installation (Developer Mode)
+## Installation (Developer Mode)
 
 1. Clone this repository or download the ZIP file and extract it.
    ```bash
